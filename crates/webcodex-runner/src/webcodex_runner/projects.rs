@@ -221,7 +221,9 @@ fn load_runner_project_shell_contexts_from_dir(dir: &Path) -> Vec<RunnerProjectS
         let Ok(project) = parse_runner_project_toml(&content) else {
             continue;
         };
-        if project.disabled || !seen.insert(project.id.clone()) {
+        // Preserve registry ordering even for disabled records: a later duplicate
+        // must not silently re-enable the first authoritative registration.
+        if !seen.insert(project.id.clone()) || project.disabled {
             continue;
         }
         projects.push(RunnerProjectShellContext {
@@ -255,9 +257,10 @@ pub(crate) fn find_project_shell_context(
         .map(|(_, project)| project)
 }
 
-/// Resolve one enabled project by its Runner-local id. Persistent shells use
-/// the id from the authenticated runtime-project binding rather than choosing
-/// a project solely from a caller-controlled cwd.
+/// Resolve one enabled project by its Runner-local id without Git enrichment or
+/// filesystem inspection of unrelated project roots. Persistent shells, LSP and
+/// validation use the authenticated binding, then validate the selected root.
+/// Re-read registrations on every lookup so disable/removal takes effect.
 pub(crate) fn find_project_shell_context_by_id(
     project_registry_dir: &Path,
     project_id: &str,
@@ -516,7 +519,15 @@ fn run_git_bounded_with_program(
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    // Per-thread evidence: lookup-only paths must never enter Git enrichment.
+    pub(crate) static PROJECT_GIT_CAPTURE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn run_git_capture(path: &str, args: &[&str], shutdown: Option<&AtomicBool>) -> Option<String> {
+    #[cfg(test)]
+    PROJECT_GIT_CAPTURE_COUNT.with(|count| count.set(count.get() + 1));
     let output = run_git_bounded(Path::new(path), args, PROJECT_GIT_TIMEOUT, shutdown).ok()?;
     if !output.status.success() || output.stdout_capped {
         return None;

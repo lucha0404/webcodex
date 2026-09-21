@@ -611,6 +611,82 @@ fn call_hierarchy_preserves_unicode_scalar_positions_and_language_profiles() {
 }
 
 #[test]
+fn lsp_project_lookup_does_not_enrich_unrelated_projects_with_git() {
+    let _serial = super::serialize_fake_lsp_test();
+    let fixture = NavFixture::new("normal");
+    for index in 0..7 {
+        fs::write(
+            fixture
+                .project_registry_dir
+                .join(format!("unrelated-{index}.toml")),
+            format!(
+                "id = \"other-{index}\"\npath = {:?}\n",
+                fixture.root.to_string_lossy()
+            ),
+        )
+        .unwrap();
+    }
+    let before =
+        crate::webcodex_runner::projects::PROJECT_GIT_CAPTURE_COUNT.with(|count| count.get());
+    let result = fixture.request(RunnerLspPayload {
+        project_id: "demo".into(),
+        request: RunnerLspRequest::Status,
+    });
+    assert_eq!(result["success"], true, "{result}");
+    let after =
+        crate::webcodex_runner::projects::PROJECT_GIT_CAPTURE_COUNT.with(|count| count.get());
+    assert_eq!(
+        after, before,
+        "LSP project lookup must not execute Git in any registered project"
+    );
+    assert!(!fixture.marker.exists(), "status must remain lazy");
+}
+
+#[test]
+fn lsp_project_lookup_rechecks_disabled_and_removed_registrations() {
+    let _serial = super::serialize_fake_lsp_test();
+    let fixture = NavFixture::new("normal");
+    let request = || {
+        fixture.request(RunnerLspPayload {
+            project_id: "demo".into(),
+            request: RunnerLspRequest::Status,
+        })
+    };
+    assert_eq!(request()["success"], true);
+    let registration = fixture.project_registry_dir.join("demo.toml");
+    fs::write(
+        &registration,
+        format!(
+            "id = \"demo\"\npath = {:?}\ndisabled = true\n",
+            fixture.root.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    // A disabled first record must shadow a later duplicate, not enable it.
+    fs::write(
+        fixture.project_registry_dir.join("z-duplicate.toml"),
+        format!(
+            "id = \"demo\"\npath = {:?}\n",
+            fixture.root.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        request()["success"],
+        false,
+        "disabled project must not resolve"
+    );
+    fs::remove_file(fixture.project_registry_dir.join("z-duplicate.toml")).unwrap();
+    fs::remove_file(&registration).unwrap();
+    assert_eq!(
+        request()["success"],
+        false,
+        "removed registration must not be cached"
+    );
+    assert!(!fixture.marker.exists());
+}
+
+#[test]
 fn status_does_not_start_server_and_unavailable_succeeds() {
     let _serial = super::serialize_fake_lsp_test();
     let fixture = NavFixture::new("normal");

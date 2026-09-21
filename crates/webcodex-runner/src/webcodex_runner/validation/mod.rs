@@ -16,7 +16,7 @@ pub(crate) use registry::{adapter_metadata, registered_adapter_ids};
 
 use super::config::RunnerPolicy;
 use super::output::CommandResult;
-use super::projects::load_runner_project_summaries_from_dir;
+use super::projects::find_project_shell_context_by_id;
 use super::shell::cwd_allowed;
 use crate::validation_bridge::{
     failure_kinds, validate_bridge_request, ValidationBridgeRequest, ValidationBridgeResponse,
@@ -153,14 +153,11 @@ fn resolve_runner_project(
     project_registry_dir: &Path,
     project_id: &str,
 ) -> Result<PathBuf, ValidationBridgeResultEnvelope> {
-    let projects = load_runner_project_summaries_from_dir(project_registry_dir);
-    let project = projects
-        .into_iter()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| {
+    let project =
+        find_project_shell_context_by_id(project_registry_dir, project_id).ok_or_else(|| {
             ValidationBridgeResultEnvelope::err(
                 failure_kinds::UNKNOWN_PROJECT,
-                "unknown agent project",
+                "unknown or disabled agent project",
             )
         })?;
     Ok(PathBuf::from(project.path))

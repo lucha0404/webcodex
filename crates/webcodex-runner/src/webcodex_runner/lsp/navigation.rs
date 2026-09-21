@@ -6,7 +6,7 @@
 
 use super::super::config::RunnerPolicy;
 use super::super::output::CommandResult;
-use super::super::projects::load_runner_project_summaries_from_dir;
+use super::super::projects::find_project_shell_context_by_id;
 use super::super::shell::cwd_allowed;
 use super::language::{
     detected_profiles, primary_profile, route_extension, supported_extensions_label,
@@ -237,9 +237,13 @@ fn resolve_runner_project(
             "project_id cannot be empty",
         ));
     }
-    let projects = load_runner_project_summaries_from_dir(project_registry_dir);
-    let project = projects.into_iter().find(|p| p.id == id).ok_or_else(|| {
-        RunnerLspResultEnvelope::err(error_codes::UNKNOWN_PROJECT, "unknown agent project")
+    // Only registration identity is needed. Inventory summaries execute Git in
+    // every project and can exhaust the startup status probe's entire budget.
+    let project = find_project_shell_context_by_id(project_registry_dir, id).ok_or_else(|| {
+        RunnerLspResultEnvelope::err(
+            error_codes::UNKNOWN_PROJECT,
+            "unknown or disabled agent project",
+        )
     })?;
     Ok(ResolvedProject {
         path: PathBuf::from(project.path),

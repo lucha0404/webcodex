@@ -140,6 +140,35 @@ fn with_path_mode<T>(bin_dir: &std::path::Path, available: bool, f: impl FnOnce(
 }
 
 #[test]
+fn validation_project_lookup_is_git_free_and_rejects_disabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let registry = temp.path().join("registry");
+    fs::create_dir(&registry).unwrap();
+    let registration = registry.join("demo.toml");
+    let text = format!(
+        "id = \"demo\"\npath = {:?}\n",
+        temp.path().to_string_lossy()
+    );
+    fs::write(&registration, &text).unwrap();
+    let before =
+        crate::webcodex_runner::projects::PROJECT_GIT_CAPTURE_COUNT.with(|count| count.get());
+    let resolved = resolve_runner_project(&registry, "demo").unwrap();
+    assert_eq!(
+        resolved.canonicalize().unwrap(),
+        temp.path().canonicalize().unwrap()
+    );
+    let after =
+        crate::webcodex_runner::projects::PROJECT_GIT_CAPTURE_COUNT.with(|count| count.get());
+    assert_eq!(
+        after, before,
+        "validation lookup must not run unrelated Git commands"
+    );
+    fs::write(&registration, format!("{text}disabled = true\n")).unwrap();
+    assert!(resolve_runner_project(&registry, "demo").is_err());
+    assert!(resolve_runner_project(&registry, "unknown").is_err());
+}
+
+#[test]
 fn registry_exposes_pyright_only_for_now() {
     assert_eq!(registered_adapter_ids(), vec!["pyright"]);
     let meta = adapter_metadata("pyright").unwrap();

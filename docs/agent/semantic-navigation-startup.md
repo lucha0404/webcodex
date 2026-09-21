@@ -13,6 +13,13 @@ observed status determines `available`, `recommended`, and `position_encoding`.
 A missing/mismatched provider record remains a malformed result. No server process
 is launched by the startup status probe.
 
+Project resolution uses the enabled registry record, not a Git-enriched inventory
+scan. LSP and validation do not execute Git in unrelated repositories before
+handling a request. The selected root is still checked against Runner policy;
+disabled/removed registrations are re-read on every request, and a later duplicate
+cannot re-enable a disabled first record. The normal inventory retains its Git
+metadata; no stale availability cache or wider permissions are introduced.
+
 The two-second shared probe deadline and cancellation behavior are unchanged.
 Timeout remains `probe_timeout` with `available=null`, not a positive or negative
 availability claim. Direct `lsp_status` can provide a separate current observation.
