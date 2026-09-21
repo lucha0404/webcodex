@@ -472,9 +472,17 @@ fn malformed_unknown_and_duplicate_responses_fail_closed() {
 
 #[test]
 fn timeout_and_invalid_untrusted_outputs_are_bounded() {
-    let timeout = Fixture::new("timeout", 1);
+    // The assertion below exercises a dispatched call timeout, not cold process
+    // startup. Initialize separately, then retain the one-second call budget.
+    let mut timeout = Fixture::new("timeout", 5);
     let provider = timeout.provider();
-    assert!(timeout.list(&provider).error.is_none());
+    let initial = timeout.list(&provider);
+    assert!(
+        initial.error.is_none(),
+        "initial list failed before timeout scenario: {:?}",
+        initial.error
+    );
+    timeout.manager.request_timeout = Duration::from_secs(1);
     let response = timeout.call(&provider);
     assert_eq!(response.error.as_ref().unwrap().code, "provider_timeout");
     assert_eq!(

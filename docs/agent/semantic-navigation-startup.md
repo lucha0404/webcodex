@@ -28,3 +28,18 @@ observed, to avoid changing unrelated wire compatibility.
 
 The diagnostic output schema includes the Python/TypeScript language, provider,
 and limitation values. No tools, permissions, or response-size bounds are added.
+
+## Windows shell lifecycle acceptance
+
+Use an independently installed, signature-verified PowerShell executable for a
+Runner whose child-process cleanup must be enforced by Windows Job Objects. On
+the inspected host, Store-packaged PowerShell 7.6.6 left native descendants alive
+after the owning job was terminated; changing the alias to the package's actual
+path did not repair it. The official standalone 7.6.6 distribution and Windows
+PowerShell 5.1 passed the same parent/descendant test. A Runner-local `shell.program`
+and `shell.path_prepend` can select the verified standalone distribution without
+changing the user's global PATH or uninstalling the Store app.
+
+Do not weaken Windows application-control policy for generated test executables.
+A policy denial is an environment-blocked test, not a successful plugin test or
+permission to retry the blocked executable through a different route.
