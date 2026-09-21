@@ -130,14 +130,18 @@ fn runner_file_read_range_output_obeys_max_bytes() {
 #[test]
 fn runner_file_read_range_rejects_serialized_envelope_expansion_before_stdout() {
     for (name, byte, len) in [
-        ("nul.txt", 0x00, 48 * 1024),
+        // NUL is a reserved Windows device name even with a .txt suffix.
+        // Exercise NUL bytes in an ordinary file, not the device namespace.
+        ("nul-bytes.txt", 0x00, 48 * 1024),
         ("quote.txt", b'\"', 140 * 1024),
         ("backslash.txt", b'\\', 140 * 1024),
         ("control.txt", 0x01, 48 * 1024),
     ] {
         let tmp = tempfile::tempdir().unwrap();
         let policy = project_policy(tmp.path());
-        std::fs::write(tmp.path().join(name), vec![byte; len]).unwrap();
+        let fixture = vec![byte; len];
+        std::fs::write(tmp.path().join(name), &fixture).unwrap();
+        assert_eq!(std::fs::read(tmp.path().join(name)).unwrap(), fixture);
         let out = handle_file_request(
             &policy,
             &file_read_request(tmp.path(), name, Some(1), Some(1), Some(512 * 1024)),
@@ -146,7 +150,11 @@ fn runner_file_read_range_rejects_serialized_envelope_expansion_before_stdout() 
             out.exit_code.is_none(),
             "unexpected success for {name}: {out:?}"
         );
-        assert_eq!(out.error.as_deref(), Some("range output too large"));
+        assert_eq!(
+            out.error.as_deref(),
+            Some("range output too large"),
+            "unexpected range result for {name}"
+        );
         assert!(
             out.stdout.is_none(),
             "oversized envelope reached stdout for {name}"
