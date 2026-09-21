@@ -41,13 +41,16 @@ advances only that exact mapping while preserving history.
 
 **Stateless MCP 2026 itself never treats `Mcp-Session-Id` as a stable window.**
 ChatGPT-hosted stateless requests may instead carry the host-owned
-`_meta["openai/session"]` value. The MCP adapter validates and immediately
-domain-separates/hashes that opaque value into a `ClientWindow`; the raw value is
-never persisted or exposed. When present, Project Connector `task_start` may
-therefore resolve the exact mapping above for the same authenticated subject,
-Connector project, and canonical root. Missing or malformed OpenAI session
-metadata yields no implicit continuity, and a caller-supplied legacy
-`Mcp-Session-Id` still must not create hidden continuity.
+`_meta["openai/session"]` value or, when that metadata is absent or invalid,
+the existing conversation-scoped `openai-conversation-id` request header. The MCP adapter
+validates and immediately domain-separates/hashes that opaque value into a
+`ClientWindow`; the raw value is never persisted or exposed. Session metadata
+wins when both inputs are present. When either accepted OpenAI identity is
+present, Project Connector `task_start` may therefore resolve the exact mapping
+above for the same authenticated subject, Connector project, and canonical root.
+If neither accepted OpenAI input is valid, the request gets no implicit
+continuity; a caller-supplied legacy `Mcp-Session-Id` still must not create
+hidden continuity.
 
 Existing work remains explicitly addressable by durable `task_id` through
 `task_resume` (and discoverable with `task_list`). This explicit recovery path is
@@ -58,7 +61,7 @@ project identity, connection, or prior request.
 Legacy/stateful MCP and first-party/hosted HTTP adapters may have their own
 explicit window sources, such as the older server-minted MCP session header, a
 conversation-scoped request header, or a first-party HttpOnly window cookie. The
-ChatGPT stateless `openai/session` projection is another adapter-local
+ChatGPT stateless OpenAI session/conversation projection is another adapter-local
 `ClientWindow` input. None of these is a general property of HTTP or MCP, and
 none is proof of Workflow Session identity, model-context retention, or
 authority. Raw window values are not stored; only their domain-separated hash is
@@ -67,7 +70,7 @@ used where that adapter contract permits window binding.
 Restart recovery follows the same boundary: durable Connector Task history always
 survives; adapters with an explicit stable window may restore an exact
 window/repository mapping automatically. Stateless callers without a valid
-OpenAI session recover explicitly by `task_id`. `task_resume` may rebind only
+OpenAI window identity recover explicitly by `task_id`. `task_resume` may rebind only
 when the current adapter actually supplies a new stable `ClientWindow`; otherwise
 the durable Connector Task resumes without manufacturing one.
 

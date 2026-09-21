@@ -1967,13 +1967,8 @@ mod tests {
         reset_trace_store_accounting();
 
         let raw_window = "chatgpt-window-opaque-secret";
-        let params = json!({
-            "name": "runtime_status",
-            "arguments": {},
-            "_meta": {"openai/session": raw_window}
-        });
-        let resolved = crate::client_window::stateless_mcp_window(&params);
-        let window = resolved.identity.expect("valid OpenAI session window");
+        let window = crate::client_window::ClientWindow::from_opaque("openai-session", raw_window)
+            .expect("valid OpenAI session window");
         let expected_key = window.key().to_string();
         let trace_ids = ["window-trace-a", "window-trace-b"];
 

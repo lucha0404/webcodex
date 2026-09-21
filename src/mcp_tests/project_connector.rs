@@ -722,6 +722,168 @@ async fn http_project_connector_2026_uses_openai_session_as_host_window_identity
 }
 
 #[tokio::test]
+async fn http_project_connector_2026_uses_openai_conversation_header_when_session_meta_absent() {
+    use std::collections::BTreeSet;
+
+    let config = test_config(Some("secret"));
+    let (tmp, db) = test_db();
+    let project = tmp
+        .path()
+        .join("connector-2026-openai-conversation-project");
+    crate::connector_runtime::tests::init_repo(&project);
+    let user_token = CONNECTOR_TEST_CREDENTIAL;
+    let runtime = Arc::new(test_runtime_with_exposure(
+        RuntimeExposure::ProjectConnector,
+    ));
+    let service = Service::new(build_connector_test_router(
+        config,
+        db.clone(),
+        runtime,
+        &project,
+    ));
+
+    let start_params = |goal: &str| {
+        mcp_2026_params(json!({
+            "name": "task_start",
+            "arguments": { "goal": goal, "mode": "read_only" }
+        }))
+    };
+
+    let mut first = TestClient::post("http://localhost/mcp")
+        .bearer_auth(user_token)
+        .add_header(
+            MCP_PROTOCOL_VERSION_HEADER,
+            MCP_STATELESS_PROTOCOL_VERSION,
+            true,
+        )
+        .add_header(MCP_METHOD_HEADER, "tools/call", true)
+        .add_header(MCP_NAME_HEADER, "task_start", true)
+        .add_header("openai-conversation-id", "conversation-header-a", true)
+        .add_header(
+            crate::client_window::MCP_SESSION_HEADER,
+            "legacy-session-must-not-bind-header-fallback",
+            true,
+        )
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 226,
+            "method": "tools/call",
+            "params": start_params("inspect from OpenAI conversation header A")
+        }))
+        .send(&service)
+        .await;
+    assert_eq!(effective_status(&first), StatusCode::OK);
+    let first_body: Value = first.take_json().await.unwrap();
+    let first_task_id = first_body["result"]["structuredContent"]["task_id"]
+        .as_str()
+        .expect("OpenAI conversation header task_start must return task_id")
+        .to_string();
+
+    let mut continued = TestClient::post("http://localhost/mcp")
+        .bearer_auth(user_token)
+        .add_header(
+            MCP_PROTOCOL_VERSION_HEADER,
+            MCP_STATELESS_PROTOCOL_VERSION,
+            true,
+        )
+        .add_header(MCP_METHOD_HEADER, "tools/call", true)
+        .add_header(MCP_NAME_HEADER, "task_start", true)
+        .add_header("openai-conversation-id", "conversation-header-a", true)
+        .add_header(
+            crate::client_window::MCP_SESSION_HEADER,
+            "different-legacy-session-still-must-not-bind-header-fallback",
+            true,
+        )
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 227,
+            "method": "tools/call",
+            "params": start_params("continue OpenAI conversation header A")
+        }))
+        .send(&service)
+        .await;
+    assert_eq!(effective_status(&continued), StatusCode::OK);
+    let continued_body: Value = continued.take_json().await.unwrap();
+    assert_eq!(
+        continued_body["result"]["structuredContent"]["task_id"],
+        first_task_id
+    );
+    assert_eq!(
+        continued_body["result"]["structuredContent"]["data"]["continuation"],
+        "continued"
+    );
+
+    let mut other = TestClient::post("http://localhost/mcp")
+        .bearer_auth(user_token)
+        .add_header(
+            MCP_PROTOCOL_VERSION_HEADER,
+            MCP_STATELESS_PROTOCOL_VERSION,
+            true,
+        )
+        .add_header(MCP_METHOD_HEADER, "tools/call", true)
+        .add_header(MCP_NAME_HEADER, "task_start", true)
+        .add_header("openai-conversation-id", "conversation-header-b", true)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 228,
+            "method": "tools/call",
+            "params": start_params("inspect from OpenAI conversation header B")
+        }))
+        .send(&service)
+        .await;
+    assert_eq!(effective_status(&other), StatusCode::OK);
+    let other_body: Value = other.take_json().await.unwrap();
+    assert_ne!(
+        other_body["result"]["structuredContent"]["task_id"], first_task_id,
+        "different OpenAI conversation headers must not share connector task state"
+    );
+
+    let durable_windows = {
+        let conn = db.conn_for_tests();
+        let mut stmt = conn
+            .prepare(
+                "SELECT client_window_key, client_window_source
+                 FROM action_events
+                 WHERE client_window_key IS NOT NULL
+                 ORDER BY event_id",
+            )
+            .unwrap();
+        stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    };
+    assert!(!durable_windows.is_empty());
+    assert!(durable_windows
+        .iter()
+        .all(|(_, source)| source == "openai-conversation"));
+    assert!(durable_windows.iter().all(|(key, _)| key.len() == 64));
+    let keys = durable_windows
+        .iter()
+        .map(|(key, _)| key.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        keys.len(),
+        2,
+        "same header must correlate while different conversation headers remain isolated"
+    );
+    let durable_debug = format!("{durable_windows:?}");
+    assert!(!durable_debug.contains("conversation-header-a"));
+    assert!(!durable_debug.contains("conversation-header-b"));
+
+    let summaries = db.list_window_activity_summaries(None, 10).unwrap();
+    assert_eq!(summaries.len(), 2);
+    assert!(summaries
+        .iter()
+        .all(|summary| summary.client_window_source == "openai-conversation"));
+    assert!(summaries.iter().all(|summary| {
+        summary.last_tool_call_at_ms.is_some() && summary.last_meaningful_activity_at_ms.is_some()
+    }));
+}
+
+#[tokio::test]
 async fn http_project_connector_2026_tasks_poll_durable_execution_across_reopen() {
     let config = test_config(Some("secret"));
     let (tmp, db) = test_db();

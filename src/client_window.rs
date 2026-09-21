@@ -79,21 +79,34 @@ pub(crate) fn mcp_window(req: &Request, initialize: bool) -> McpWindow {
     }
 }
 
-/// Resolve stateless ChatGPT MCP conversation identity from host-provided
-/// request metadata. The opaque OpenAI value is domain-separated and hashed
-/// immediately; it is never persisted or returned raw. Missing or malformed
-/// metadata deliberately yields no continuity identity instead of falling back
-/// to auth-wide or transport-wide inference.
-pub(crate) fn stateless_mcp_window(params: &serde_json::Value) -> McpWindow {
-    let identity = params
-        .get("_meta")
-        .and_then(|meta| meta.get("openai/session"))
-        .and_then(serde_json::Value::as_str)
-        .and_then(|raw| ClientWindow::from_opaque("openai-session", raw));
+/// Resolve stateless ChatGPT MCP conversation identity from explicit
+/// host-provided OpenAI evidence. Valid `openai/session` metadata wins; when it
+/// is absent or malformed, an independently valid `openai-conversation-id`
+/// header is accepted. The opaque value is domain-separated and hashed
+/// immediately; it is never persisted or returned raw. If neither input is
+/// valid, no continuity identity is manufactured from auth, project, transport,
+/// or prior-request state.
+pub(crate) fn stateless_mcp_window(req: &Request, params: &serde_json::Value) -> McpWindow {
+    let identity = stateless_mcp_identity(params, request_header(req, OPENAI_CONVERSATION_HEADER));
     McpWindow {
         identity,
         issued_session_id: None,
     }
+}
+
+fn stateless_mcp_identity(
+    params: &serde_json::Value,
+    openai_conversation_id: Option<&str>,
+) -> Option<ClientWindow> {
+    params
+        .get("_meta")
+        .and_then(|meta| meta.get("openai/session"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|raw| ClientWindow::from_opaque("openai-session", raw))
+        .or_else(|| {
+            openai_conversation_id
+                .and_then(|raw| ClientWindow::from_opaque("openai-conversation", raw))
+        })
 }
 
 pub(crate) fn set_mcp_session_header(res: &mut Response, session_id: &str) {
@@ -190,19 +203,45 @@ mod tests {
             "_meta": {"openai/session": "chat-session-opaque-value"}
         });
 
-        let first = stateless_mcp_window(&params);
-        let second = stateless_mcp_window(&params);
-        let identity = first
-            .identity
+        let identity = stateless_mcp_identity(&params, None)
             .expect("OpenAI session should yield window identity");
-        let repeated = second
-            .identity
+        let repeated = stateless_mcp_identity(&params, None)
             .expect("same OpenAI session should yield identity");
 
         assert_eq!(identity.key(), repeated.key());
         assert_eq!(identity.source(), "openai-session");
         assert!(!identity.key().contains("chat-session-opaque-value"));
-        assert!(first.issued_session_id.is_none());
+        let resolved = McpWindow {
+            identity: Some(identity.clone()),
+            issued_session_id: None,
+        };
+        assert!(resolved.issued_session_id.is_none());
+    }
+
+    #[test]
+    fn stateless_mcp_identity_falls_back_to_openai_conversation_header() {
+        let params = serde_json::json!({"name": "runtime_status", "arguments": {}});
+        let identity = stateless_mcp_identity(&params, Some("conversation-opaque-value"))
+            .expect("OpenAI conversation header should yield window identity");
+
+        assert_eq!(identity.source(), "openai-conversation");
+        assert!(!identity.key().contains("conversation-opaque-value"));
+        assert_eq!(identity.key().len(), 64);
+    }
+
+    #[test]
+    fn stateless_mcp_identity_prefers_openai_session_metadata_over_header() {
+        let params = serde_json::json!({
+            "name": "runtime_status",
+            "arguments": {},
+            "_meta": {"openai/session": "session-opaque-value"}
+        });
+        let identity = stateless_mcp_identity(&params, Some("conversation-opaque-value"))
+            .expect("OpenAI session metadata should yield window identity");
+
+        assert_eq!(identity.source(), "openai-session");
+        assert!(!identity.key().contains("session-opaque-value"));
+        assert!(!identity.key().contains("conversation-opaque-value"));
     }
 
     #[test]
@@ -214,12 +253,10 @@ mod tests {
             serde_json::json!({"_meta": {"openai/session": 42}}),
             serde_json::json!({"_meta": {"openai/session": "contains space"}}),
         ] {
-            let window = stateless_mcp_window(&params);
             assert!(
-                window.identity.is_none(),
+                stateless_mcp_identity(&params, None).is_none(),
                 "unexpected identity for {params}"
             );
-            assert!(window.issued_session_id.is_none());
         }
     }
 }

@@ -481,7 +481,7 @@ pub async fn mcp_post(req: &mut Request, depot: &mut Depot, res: &mut Response) 
             crate::client_window::mcp_window(req, request.method == "initialize")
         }
         McpProtocolEra::Stateless2026 => {
-            crate::client_window::stateless_mcp_window(&request.params)
+            crate::client_window::stateless_mcp_window(req, &request.params)
         }
     };
     guard.set_client_window(window.identity.as_ref());
