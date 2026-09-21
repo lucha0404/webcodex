@@ -1,4 +1,8 @@
 use super::*;
+
+#[cfg(windows)]
+#[path = "main_tests/stdio_inheritance.rs"]
+mod stdio_inheritance;
 use crate::webcodex_runner::config::validate_shell_config;
 use crate::webcodex_runner::run_shell_with_profiles;
 use crate::webcodex_runner::{

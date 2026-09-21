@@ -25,10 +25,13 @@ The reviewed upstream snapshot for this integration is `37098d4624f0000bfab54ad1
 | MCP timeout fixture separation | Test call deadlines independently from cold process startup | Equivalent upstream fixture isolates both budgets |
 | Upstream PR #607 stdin isolation | Raw shell and validation children receive EOF, not the Runner's parent-liveness input | Integrated upstream source includes ae52912cd599d329d95d619e2a272e427d60ab56 or equivalent |
 | Upstream PR #610 Runner parent-pipe observation | Windows pipe monitoring must not block registration and must notice parent EOF | Integrated upstream source includes the relevant 37098d4624f0000bfab54ad102ecb0df619d7dc6 behavior |
+| Windows standard-pipe inheritance fence | Detached descendants must not retain unrelated parent capture pipes after the Runner exits | Equivalent upstream startup isolation passes the live-descendant capture-EOF regression |
 
 The #607 backport maps the upstream JobManager module back to the v0.4.1 `src/main.rs` location and adapts private test fixtures. Its two real-process tests remain ignored by default and are run explicitly during acceptance.
 The #610 backport imports the Runner pipe-listener code and original regression, with required Windows API feature declarations. It does not import unrelated Desktop relocation, UI, Goal, or file-transfer refactoring changes.
 No production deadline, authentication, authorization, sandbox, or process-lifetime boundary is relaxed to make tests pass.
+
+The additional standard-pipe fence is a local corrective patch, not part of upstream #607 or #610. It clears only the inheritance flag of this process's existing standard pipe handles before any worker or internal detached mode starts; the handles remain open and usable. The isolated Windows regression keeps a descendant alive while proving parent capture EOF, and separately proves explicitly inherited stdout/stderr still work. Deployment acceptance must also retain a detached Job across Runner replacement with real parent and capture pipes.
 
 ## Validation and deployment
 

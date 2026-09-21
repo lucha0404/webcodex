@@ -5737,7 +5737,43 @@ fn handle_one_poll(
         .map_err(PollError::from_submit)
 }
 
+#[cfg(windows)]
+fn isolate_inherited_standard_pipes() -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{
+        SetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{GetFileType, FILE_TYPE_PIPE};
+
+    // Parent leases and capture pipes belong to this process. Explicit child
+    // stdio is prepared separately by Command; unrelated inheritable copies
+    // must not keep the Desktop's readers alive after this Runner exits.
+    for handle in [
+        std::io::stdin().as_raw_handle(),
+        std::io::stdout().as_raw_handle(),
+        std::io::stderr().as_raw_handle(),
+    ] {
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            continue;
+        }
+        // SAFETY: standard handles are borrowed from this process, never closed
+        // or retargeted here. Only the inheritance bit of actual pipes changes.
+        if unsafe { GetFileType(handle) } == FILE_TYPE_PIPE
+            && unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 fn main() {
+    // Run before threads, providers, or the detached internal mode can spawn.
+    #[cfg(windows)]
+    if let Err(error) = isolate_inherited_standard_pipes() {
+        eprintln!("webcodex-runner cannot isolate parent standard pipes: {error}");
+        std::process::exit(1);
+    }
     if let Some(code) =
         webcodex_runner::detached_job::maybe_run_internal_mode(std::env::args().skip(1))
     {
