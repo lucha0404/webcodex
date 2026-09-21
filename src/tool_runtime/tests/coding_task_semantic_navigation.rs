@@ -561,6 +561,19 @@ fn coding_workflow_semantic_navigation_output_schema_is_explicit_and_surface_cou
         .unwrap();
     let semantic = &standard["properties"]["semantic_navigation"];
     assert_eq!(semantic["additionalProperties"], false);
+    // Standard startup keeps its six-field compact projection. Language/server
+    // enums belong to full diagnostics, not to the model-facing brief.
+    assert_eq!(semantic["properties"].as_object().unwrap().len(), 6);
+    for absent in ["language", "server", "limitations"] {
+        assert!(semantic["properties"].get(absent).is_none());
+    }
+    let full = schema["properties"]["output"]["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|variant| variant["properties"]["detail"]["const"] == "full")
+        .unwrap();
+    let full_semantic = &full["properties"]["semantic_navigation"];
     for (language, provider, limitation) in [
         ("python", "pyright", "python_only"),
         (
@@ -569,15 +582,15 @@ fn coding_workflow_semantic_navigation_output_schema_is_explicit_and_surface_cou
             "typescript_only",
         ),
     ] {
-        assert!(semantic["properties"]["language"]["anyOf"][0]["enum"]
+        assert!(full_semantic["properties"]["language"]["anyOf"][0]["enum"]
             .as_array()
             .unwrap()
             .contains(&json!(language)));
-        assert!(semantic["properties"]["server"]["anyOf"][0]["enum"]
+        assert!(full_semantic["properties"]["server"]["anyOf"][0]["enum"]
             .as_array()
             .unwrap()
             .contains(&json!(provider)));
-        assert!(semantic["properties"]["limitations"]["items"]["enum"]
+        assert!(full_semantic["properties"]["limitations"]["items"]["enum"]
             .as_array()
             .unwrap()
             .contains(&json!(limitation)));
