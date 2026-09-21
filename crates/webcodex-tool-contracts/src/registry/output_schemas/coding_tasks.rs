@@ -930,11 +930,11 @@ fn startup_verdict_schema() -> Value {
 fn semantic_navigation_schema() -> Value {
     json!({
         "type": "object",
-        "description": "Always-present bounded Rust/Go semantic-navigation capability summary. Derived only from a typed agent status probe; never contains transport envelopes, process output, paths, environment variables, or symbol/location data.",
+        "description": "Always-present bounded Rust/Go/Python/TypeScript semantic-navigation capability summary. Derived only from a typed agent status probe; never contains transport envelopes, process output, paths, environment variables, or symbol/location data.",
         "additionalProperties": false,
         "properties": {
             "supported": schema_type("boolean", "True when the Project is Runner-backed, the owning Runner is connected, and it advertises lsp_read_only_navigation."),
-            "available": nullable_schema("boolean", "Observed semantic-navigation availability. True means supported Rust/Go navigation has an available executable or an existing running/initializing server slot; false is a positive unavailable observation; null means the bounded startup status probe timed out before availability could be observed."),
+            "available": nullable_schema("boolean", "Observed semantic-navigation availability. True means supported Rust/Go/Python/TypeScript navigation has an available executable or an existing running/initializing server slot; false is a positive unavailable observation; null means the bounded startup status probe timed out before availability could be observed."),
             "recommended": schema_type("boolean", "True only for available or running status."),
             "status": {
                 "type": "string",
@@ -953,13 +953,13 @@ fn semantic_navigation_schema() -> Value {
             },
             "language": {
                 "anyOf": [
-                    { "type": "string", "enum": ["rust", "go"] },
+                    { "type": "string", "enum": ["rust", "go", "python", "typescript"] },
                     { "type": "null" }
                 ]
             },
             "server": {
                 "anyOf": [
-                    { "type": "string", "enum": ["rust-analyzer", "gopls"] },
+                    { "type": "string", "enum": ["rust-analyzer", "gopls", "pyright", "typescript-language-server"] },
                     { "type": "null" }
                 ]
             },
@@ -993,7 +993,7 @@ fn semantic_navigation_schema() -> Value {
                 "uniqueItems": true,
                 "items": {
                     "type": "string",
-                    "enum": ["rust_only", "go_only", "read_only", "workspace_only", "no_dependency_navigation", "full_text_sync_only"]
+                    "enum": ["rust_only", "go_only", "python_only", "typescript_only", "read_only", "workspace_only", "no_dependency_navigation", "full_text_sync_only"]
                 }
             },
             "reason_code": {

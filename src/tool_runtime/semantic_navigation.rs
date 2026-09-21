@@ -22,6 +22,10 @@ const RUST_LANGUAGE: &str = "rust";
 const RUST_ANALYZER_SERVER: &str = "rust-analyzer";
 const GO_LANGUAGE: &str = "go";
 const GOPLS_SERVER: &str = "gopls";
+const PYTHON_LANGUAGE: &str = "python";
+const PYRIGHT_SERVER: &str = "pyright";
+const TYPESCRIPT_LANGUAGE: &str = "typescript";
+const TYPESCRIPT_SERVER: &str = "typescript-language-server";
 const SEMANTIC_NAVIGATION_TOOLS: [&str; 7] = [
     "lsp_status",
     "document_symbols",
@@ -48,6 +52,20 @@ const RUST_SEMANTIC_NAVIGATION_LIMITATIONS: [&str; 5] = [
 ];
 const GO_SEMANTIC_NAVIGATION_LIMITATIONS: [&str; 5] = [
     "go_only",
+    "read_only",
+    "workspace_only",
+    "no_dependency_navigation",
+    "full_text_sync_only",
+];
+const PYTHON_SEMANTIC_NAVIGATION_LIMITATIONS: [&str; 5] = [
+    "python_only",
+    "read_only",
+    "workspace_only",
+    "no_dependency_navigation",
+    "full_text_sync_only",
+];
+const TYPESCRIPT_SEMANTIC_NAVIGATION_LIMITATIONS: [&str; 5] = [
+    "typescript_only",
     "read_only",
     "workspace_only",
     "no_dependency_navigation",
@@ -212,9 +230,9 @@ impl SemanticNavigationStartupSummary {
         if result.project != expected_project_id {
             return Err(SemanticNavigationReasonCode::MalformedRunnerResult);
         }
-        // Preserve the pre-existing Rust-first behavior in mixed workspaces.
-        // Go is additive: a Go-only workspace selects gopls, while existing
-        // Python/TypeScript-only startup behavior remains unchanged.
+        // Preserve Rust then Go precedence in mixed workspaces. Python and
+        // TypeScript are also supported by the Runner and must not be reported
+        // as not applicable. Selection never implies executable availability.
         let (language, server_name, limitations) = if result
             .detected_languages
             .iter()
@@ -235,7 +253,28 @@ impl SemanticNavigationStartupSummary {
                 GOPLS_SERVER,
                 GO_SEMANTIC_NAVIGATION_LIMITATIONS.as_slice(),
             )
+        } else if result
+            .detected_languages
+            .iter()
+            .any(|language| language == PYTHON_LANGUAGE)
+        {
+            (
+                PYTHON_LANGUAGE,
+                PYRIGHT_SERVER,
+                PYTHON_SEMANTIC_NAVIGATION_LIMITATIONS.as_slice(),
+            )
+        } else if result
+            .detected_languages
+            .iter()
+            .any(|language| language == TYPESCRIPT_LANGUAGE)
+        {
+            (
+                TYPESCRIPT_LANGUAGE,
+                TYPESCRIPT_SERVER,
+                TYPESCRIPT_SEMANTIC_NAVIGATION_LIMITATIONS.as_slice(),
+            )
         } else {
+            // Retain the existing wire reason for unrecognized/no languages.
             return Ok(Self::rust_not_detected());
         };
         let Some(server) = result
@@ -437,6 +476,10 @@ impl ToolRuntime {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/semantic_navigation_languages.rs"]
+mod language_tests;
 
 #[cfg(test)]
 mod tests {

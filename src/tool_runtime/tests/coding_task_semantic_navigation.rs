@@ -258,6 +258,55 @@ async fn coding_task_semantic_navigation_unavailable_is_nonblocking() {
 }
 
 #[tokio::test]
+async fn coding_task_semantic_navigation_python_and_typescript_use_observed_providers() {
+    for (language, provider) in [
+        ("python", "pyright"),
+        ("typescript", "typescript-language-server"),
+    ] {
+        for availability in [
+            LspAvailabilityStatus::Available,
+            LspAvailabilityStatus::Unavailable,
+        ] {
+            let runtime = test_runtime();
+            let temp = tempfile::tempdir().unwrap();
+            seed_clean_repo(temp.path());
+            let project =
+                register_semantic_agent(&runtime, "language-agent", "demo", temp.path(), true)
+                    .await;
+            let task = spawn_start(&runtime, project, SessionMode::Normal);
+            let request = next_semantic_status_request(&runtime, "language-agent").await;
+            let mut status = status_result("demo", true, availability, None);
+            status.detected_languages = vec![language.to_string()];
+            status.servers[0].language = language.to_string();
+            status.servers[0].server = provider.to_string();
+            complete_status_envelope(
+                &runtime,
+                "language-agent",
+                &request.request_id,
+                RunnerLspResultEnvelope::ok(status),
+            )
+            .await;
+            let result = finish_start_servicing_locally(&runtime, "language-agent", task).await;
+            assert!(result.success, "{result:?}");
+            let semantic = &result.output["semantic_navigation"];
+            assert_eq!(semantic["provider"], provider);
+            assert_eq!(
+                semantic["available"],
+                availability == LspAvailabilityStatus::Available
+            );
+            assert_eq!(
+                semantic["status"],
+                if availability == LspAvailabilityStatus::Available {
+                    "available"
+                } else {
+                    "unavailable"
+                }
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn coding_task_semantic_navigation_non_rust_agent_is_not_applicable() {
     let runtime = test_runtime();
     let temp = tempfile::tempdir().unwrap();
@@ -512,6 +561,27 @@ fn coding_workflow_semantic_navigation_output_schema_is_explicit_and_surface_cou
         .unwrap();
     let semantic = &standard["properties"]["semantic_navigation"];
     assert_eq!(semantic["additionalProperties"], false);
+    for (language, provider, limitation) in [
+        ("python", "pyright", "python_only"),
+        (
+            "typescript",
+            "typescript-language-server",
+            "typescript_only",
+        ),
+    ] {
+        assert!(semantic["properties"]["language"]["anyOf"][0]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(language)));
+        assert!(semantic["properties"]["server"]["anyOf"][0]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(provider)));
+        assert!(semantic["properties"]["limitations"]["items"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(limitation)));
+    }
     assert_eq!(
         semantic["properties"]["status"]["enum"],
         json!([
