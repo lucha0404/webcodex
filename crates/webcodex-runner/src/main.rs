@@ -4699,8 +4699,11 @@ impl JobManager {
                         .map(|(key, value)| (key.as_str(), value.as_str())),
                 );
             }
+            // Raw Shell Jobs and validation steps have no stdin payload.
+            // Preserve the Runner parent-liveness pipe for the Runner alone.
             command
                 .current_dir(&cwd_path)
+                .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             commands.push_back(command);

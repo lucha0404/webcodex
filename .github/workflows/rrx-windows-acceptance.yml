@@ -1,0 +1,44 @@
+name: RRX Windows acceptance
+
+on:
+  push:
+    branches: ["rrx/integrate-607-610-20260921"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rrx-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-acceptance:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: never
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare standard Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup override set stable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustc --version
+          cargo --version
+          git rev-parse HEAD
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Complete default Runner regression
+        run: cargo test --locked -p webcodex-runner -- --test-threads=1
+      - name: Explicit shell and validation stdin isolation
+        run: cargo test --locked -p webcodex-runner job_stdin_isolated -- --ignored --test-threads=1
+      - name: Startup summary contracts
+        run: cargo test --locked -p webcodex --lib semantic_navigation -- --test-threads=1
