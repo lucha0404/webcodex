@@ -23,7 +23,9 @@ pub(crate) const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const DEFAULT_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const DEFAULT_IDLE_TTL: Duration = Duration::from_secs(15 * 60);
-const DEFAULT_MAX_SERVERS_PER_PROJECT: usize = 1;
+// Mixed-language projects may use each supported server kind. Keep the existing
+// Runner-wide process budget unchanged; this is not an unbounded pool.
+const DEFAULT_MAX_SERVERS_PER_PROJECT: usize = 4;
 const DEFAULT_MAX_SERVERS_PER_AGENT: usize = 4;
 const MAX_STDERR_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_DIAGNOSTIC_DOCUMENTS: usize = 256;
@@ -1731,6 +1733,44 @@ impl ServerStatusCache {
     }
 }
 
+// Normalize only Windows local-drive file identities. In particular, Pyright
+// publishes `file:///d%3A/...` for a document opened as `file:///D:/...`.
+// Never case-fold the rest of the path: Windows directories may be case-sensitive.
+// This is a cache key, not filesystem authorization or a filesystem lookup.
+#[cfg(any(windows, test))]
+fn windows_diagnostic_uri_key(uri: &str) -> Option<String> {
+    let mut parsed = Url::parse(uri).ok()?;
+    if parsed.scheme() != "file"
+        || parsed.host_str().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return None;
+    }
+    let (drive, rest) = parsed.path().strip_prefix('/')?.split_once('/')?;
+    let letter = *drive.as_bytes().first()?;
+    if !letter.is_ascii_alphabetic() {
+        return None;
+    }
+    let suffix = &drive[1..];
+    if suffix != ":" && !suffix.eq_ignore_ascii_case("%3a") {
+        return None;
+    }
+    let path = format!("/{}:/{rest}", char::from(letter.to_ascii_uppercase()));
+    parsed.set_path(&path);
+    // Round-trip escaping without touching the filesystem or resolving symlinks.
+    let file_path = parsed.to_file_path().ok()?;
+    Url::from_file_path(file_path).ok().map(String::from)
+}
+
+fn diagnostic_uri_key(uri: &str) -> String {
+    #[cfg(windows)]
+    if let Some(key) = windows_diagnostic_uri_key(uri) {
+        return key;
+    }
+    uri.to_owned()
+}
+
 #[derive(Default)]
 struct DiagnosticsCacheState {
     generation: u64,
@@ -1763,6 +1803,7 @@ impl DiagnosticsCache {
             self.record_malformed();
             return;
         }
+        let uri = diagnostic_uri_key(uri);
         let version = match params.get("version") {
             None | Some(Value::Null) => None,
             Some(value) => match value.as_i64().and_then(|value| i32::try_from(value).ok()) {
@@ -1795,9 +1836,22 @@ impl DiagnosticsCache {
             .collect::<Vec<_>>();
 
         let mut state = lock_unpoison(&self.state);
+        if let (Some(incoming), Some(current)) = (
+            version,
+            state
+                .publications
+                .get(&uri)
+                .and_then(|publication| publication.version),
+        ) {
+            // An asynchronous old response must not erase a newer publication.
+            // Versions restart only with the server instance, which owns this cache.
+            if incoming < current {
+                return;
+            }
+        }
         state.generation = state.generation.saturating_add(1);
         let generation = state.generation;
-        if !state.publications.contains_key(uri)
+        if !state.publications.contains_key(&uri)
             && state.publications.len() >= MAX_DIAGNOSTIC_DOCUMENTS
         {
             let oldest = state
@@ -1810,7 +1864,7 @@ impl DiagnosticsCache {
             }
         }
         state.publications.insert(
-            uri.to_string(),
+            uri,
             DiagnosticsPublication {
                 generation,
                 version,
@@ -1831,11 +1885,16 @@ impl DiagnosticsCache {
         baseline_generation: u64,
         deadline: Instant,
     ) -> Result<(Option<DiagnosticsPublication>, bool), LspError> {
+        let uri = diagnostic_uri_key(uri);
         let mut state = lock_unpoison(&self.state);
         loop {
-            if let Some(publication) = state.publications.get(uri) {
-                let fresh = publication.generation > baseline_generation
-                    || publication.version == Some(document_version);
+            if let Some(publication) = state.publications.get(&uri) {
+                // Arrival order cannot override an explicit document version.
+                // Only unversioned providers use the publication-generation fallback.
+                let fresh = match publication.version {
+                    Some(version) => version == document_version,
+                    None => publication.generation > baseline_generation,
+                };
                 if fresh {
                     return Ok((Some(publication.clone()), false));
                 }
@@ -1845,7 +1904,7 @@ impl DiagnosticsCache {
             }
             let remaining = remaining_until(deadline);
             if remaining.is_zero() {
-                return Ok((state.publications.get(uri).cloned(), true));
+                return Ok((state.publications.get(&uri).cloned(), true));
             }
             let waited = self.changed.wait_timeout(state, remaining);
             state = match waited {

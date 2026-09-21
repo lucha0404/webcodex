@@ -341,6 +341,11 @@ fn go_call_hierarchy_fails_explicitly_when_provider_is_unsupported() {
 fn call_hierarchy_uses_one_shared_operation_deadline() {
     let _serial = super::serialize_fake_lsp_test();
     let fixture = NavFixture::new("call_hierarchy_shared_deadline");
+    // This tests the shared traversal budget, not OS process startup latency.
+    // Warm the server so Windows startup cannot consume the one-second budget
+    // before the deliberately stalled incoming-call request is even sent.
+    let warm = fixture.hover(1, 4);
+    assert_eq!(warm["success"], true, "{warm}");
     let mut request = shell_lsp_request(RunnerLspPayload {
         project_id: "demo".into(),
         request: RunnerLspRequest::CallHierarchy {
@@ -813,6 +818,95 @@ fn navigation_sends_full_text_changes_once_per_disk_content_version() {
         .all(|line| line.contains("\"contentChanges\":[{\"text\":")));
 }
 
+#[cfg(windows)]
+#[test]
+#[ignore = "Requires installed Pyright and TypeScript language servers on Windows"]
+fn real_windows_python_typescript_diagnostics_smoke() {
+    let _serial = super::serialize_fake_lsp_test();
+    let mut fixture = NavFixture::with_language(
+        "normal",
+        LspServerKind::Pyright,
+        &[
+            ("pyrightconfig.json", "{\"typeCheckingMode\":\"basic\"}"),
+            ("sample.py", "def bump(value: int) -> int:\n    return value + 1\n\nanswer: int = 'intentional type error'\n"),
+            ("sample.ts", "export function bump(value: number): number { return value + 1; }\nexport const answer = bump(1);\n"),
+        ],
+    );
+    // No fake server commands: exercise the real installed dependencies through
+    // the same bounded native dispatch and result normalization used in production.
+    fixture.supervisor = LspSupervisor::default();
+    for path in ["sample.py", "sample.ts"] {
+        let envelope = fixture.request(RunnerLspPayload {
+            project_id: "demo".into(),
+            request: RunnerLspRequest::DocumentSymbols {
+                path: path.into(),
+                limit: 20,
+            },
+        });
+        assert_eq!(envelope["success"], true, "{envelope}");
+        assert!(
+            envelope["result"]["symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|symbol| symbol["name"] == "bump"),
+            "{envelope}"
+        );
+    }
+    let diagnostics = || {
+        fixture.request(RunnerLspPayload {
+            project_id: "demo".into(),
+            request: RunnerLspRequest::DocumentDiagnostics {
+                path: "sample.py".into(),
+                limit: 20,
+            },
+        })
+    };
+    let error = diagnostics();
+    assert_eq!(error["success"], true, "{error}");
+    assert_eq!(error["result"]["status"], "complete", "{error}");
+    assert_eq!(error["result"]["clean"], false, "{error}");
+    assert!(
+        error["result"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "reportAssignmentType"),
+        "{error}"
+    );
+    fs::write(
+        fixture.root.join("sample.py"),
+        "def bump(value: int) -> int:\n    return value + 1\n\nanswer: int = bump(1)\n",
+    )
+    .unwrap();
+    let clean = diagnostics();
+    assert_eq!(clean["success"], true, "{clean}");
+    assert_eq!(clean["result"]["status"], "complete", "{clean}");
+    assert_eq!(clean["result"]["clean"], true, "{clean}");
+    assert_eq!(clean["result"]["returned_count"], 0, "{clean}");
+    assert!(
+        clean["result"]["published_version"].as_u64().unwrap()
+            > error["result"]["published_version"].as_u64().unwrap()
+    );
+    let status = fixture.request(RunnerLspPayload {
+        project_id: "demo".into(),
+        request: RunnerLspRequest::Status,
+    });
+    assert_eq!(status["success"], true, "{status}");
+    assert_eq!(
+        status["result"]["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|server| server["running"] == true)
+            .count(),
+        2,
+        "{status}"
+    );
+    // Reap both real children before the fixture removes its temporary checkout.
+    drop(std::mem::take(&mut fixture.supervisor));
+}
+
 #[test]
 fn document_diagnostics_empty_and_one_error_are_fresh_successes() {
     let _serial = super::serialize_fake_lsp_test();
@@ -928,7 +1022,9 @@ fn document_diagnostics_handles_publication_timing_and_timeouts() {
 
     let stale_fixture = NavFixture::new("diagnostics_stale_then_timeout");
     let first = stale_fixture.diagnostics(100);
-    assert_eq!(first["result"]["status"], "complete", "{first}");
+    // Even a newly arrived publication is stale when its explicit version is old.
+    assert_eq!(first["result"]["status"], "timeout", "{first}");
+    assert_eq!(first["result"]["clean"], serde_json::Value::Null);
     assert_eq!(first["result"]["published_version"], 0);
     let stale = stale_fixture.diagnostics(100);
     assert_eq!(stale["result"]["status"], "timeout");
@@ -1110,6 +1206,10 @@ fn rust_workspace_symbols_can_outlive_the_ordinary_request_timeout() {
 fn rust_workspace_symbol_timeout_remains_bounded_by_the_operation_deadline() {
     let _serial = super::serialize_fake_lsp_test();
     let fixture = NavFixture::new("workspace_slow_success");
+    // Isolate the workspace RPC deadline from slow Windows process startup.
+    // Cold-start/readiness deadlines are exercised by their separate tests.
+    let warm = fixture.hover(1, 4);
+    assert_eq!(warm["success"], true, "{warm}");
     let started = Instant::now();
     let result = fixture.request_with_timeout(
         RunnerLspPayload {
@@ -1132,6 +1232,12 @@ fn rust_workspace_symbol_timeout_remains_bounded_by_the_operation_deadline() {
 fn workspace_symbol_restart_reapplies_readiness_fence_before_retry() {
     let _serial = super::serialize_fake_lsp_test();
     let fixture = NavFixture::new("workspace_readiness_restart");
+    let warm = fixture.hover(1, 4);
+    assert_eq!(warm["success"], true, "{warm}");
+    // A real replacement process must start before its readiness fence can be
+    // tested. Allow Windows process creation within this test's outer budget;
+    // the production deadline and all no-dispatch-after-timeout checks stay intact.
+    let request_budget_secs = if cfg!(windows) { 3 } else { 1 };
     let started = Instant::now();
     let result = fixture.request_with_timeout(
         RunnerLspPayload {
@@ -1141,11 +1247,11 @@ fn workspace_symbol_restart_reapplies_readiness_fence_before_retry() {
                 limit: 50,
             },
         },
-        1,
+        request_budget_secs,
     );
     assert_eq!(result["success"], false, "{result}");
     assert_eq!(result["error"]["code"], "lsp_request_timeout", "{result}");
-    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(started.elapsed() < Duration::from_secs(request_budget_secs + 1));
     let marker = fs::read_to_string(&fixture.marker).unwrap();
     assert_eq!(
         marker

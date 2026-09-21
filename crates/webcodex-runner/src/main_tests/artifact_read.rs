@@ -1,5 +1,72 @@
 use super::*;
 
+#[test]
+fn markdown_artifact_metadata_and_reads_preserve_plain_text_bytes() {
+    let root = tempfile::tempdir().unwrap();
+    let policy = project_policy(root.path());
+    for path in ["report.md", "REPORT.MD", "notes.markdown"] {
+        for content in ["# Report\n中文🙂\n", "[reference](relative.md)\n", ""] {
+            let bytes = content.as_bytes();
+            std::fs::write(root.path().join(path), bytes).unwrap();
+            let metadata = line_edit_json(handle_file_request(
+                &policy,
+                &json_file_op_request(
+                    root.path(),
+                    "file_read_project_artifact_metadata",
+                    path,
+                    serde_json::json!({"path": path, "max_bytes": 65536}),
+                ),
+            ));
+            assert!(metadata.get("error").is_none(), "{metadata}");
+            assert_eq!(metadata["mime_type"], "text/plain", "{path}: {content}");
+            assert_eq!(metadata["bytes"], bytes.len());
+            assert_eq!(metadata["sha256"], sha256_hex_bytes(bytes));
+            let read = line_edit_json(handle_file_request(
+                &policy,
+                &json_file_op_request(
+                    root.path(),
+                    "file_read_project_artifact",
+                    path,
+                    serde_json::json!({"path": path, "offset": 0, "length": 1024, "max_file_bytes": 65536}),
+                ),
+            ));
+            assert!(read.get("error").is_none(), "{read}");
+            assert_eq!(read["mime_type"], "text/plain");
+            assert_eq!(
+                read["content_base64"],
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+            );
+        }
+    }
+}
+
+#[test]
+fn markdown_artifact_inference_preserves_magic_and_unknown_extension_rules() {
+    let root = tempfile::tempdir().unwrap();
+    let policy = project_policy(root.path());
+    for (path, content, expected) in [
+        (
+            "image.md",
+            b"\x89PNG\r\n\x1a\nfixture".as_slice(),
+            Some("image/png"),
+        ),
+        ("report.md.bak", b"# plain text".as_slice(), None),
+    ] {
+        std::fs::write(root.path().join(path), content).unwrap();
+        let metadata = line_edit_json(handle_file_request(
+            &policy,
+            &json_file_op_request(
+                root.path(),
+                "file_read_project_artifact_metadata",
+                path,
+                serde_json::json!({"path": path, "max_bytes": 65536}),
+            ),
+        ));
+        assert!(metadata.get("error").is_none(), "{metadata}");
+        assert_eq!(metadata["mime_type"].as_str(), expected);
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn file_project_artifact_reads_reject_canonical_sensitive_paths() {

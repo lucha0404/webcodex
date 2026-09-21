@@ -112,6 +112,156 @@ impl Fixture {
 }
 
 #[test]
+fn default_lsp_capacity_admits_mixed_languages_and_keeps_global_bound() {
+    let supervisor = LspSupervisor::default();
+    let root = PathBuf::from("mixed-language-project");
+    let mut slots = HashMap::new();
+    for kind in [
+        LspServerKind::Pyright,
+        LspServerKind::TypeScriptLanguageServer,
+        LspServerKind::RustAnalyzer,
+        LspServerKind::Gopls,
+    ] {
+        let key = ProcessKey {
+            project_root: root.clone(),
+            kind,
+        };
+        supervisor.check_capacity(&slots, &key).unwrap();
+        slots.insert(
+            key,
+            Arc::new(ServerSlot {
+                state: Mutex::new(SlotState::Starting),
+                ready: Condvar::new(),
+            }),
+        );
+    }
+    assert!(matches!(
+        supervisor.check_capacity(
+            &slots,
+            &ProcessKey {
+                project_root: PathBuf::from("another-project"),
+                kind: LspServerKind::Pyright,
+            }
+        ),
+        Err(LspError::CapacityExceeded { limit: 4 })
+    ));
+}
+
+#[test]
+fn default_lsp_capacity_starts_and_reuses_python_and_typescript_together() {
+    let _serial = super::super::serialize_fake_lsp_test();
+    let fixture = Fixture::new("normal");
+    let mut config = fixture.supervisor.inner.config.clone();
+    let command = config.commands[&LspServerKind::RustAnalyzer].clone();
+    config
+        .commands
+        .insert(LspServerKind::Pyright, command.clone());
+    config
+        .commands
+        .insert(LspServerKind::TypeScriptLanguageServer, command);
+    config.max_servers_per_project = LspSupervisorConfig::default().max_servers_per_project;
+    let supervisor = LspSupervisor::new(config);
+    let python = supervisor
+        .server_for_test(&fixture.root, LspServerKind::Pyright)
+        .unwrap();
+    let typescript = supervisor
+        .server_for_test(&fixture.root, LspServerKind::TypeScriptLanguageServer)
+        .unwrap();
+    assert_ne!(python.process_id(), typescript.process_id());
+    let again = supervisor
+        .server_for_test(&fixture.root, LspServerKind::Pyright)
+        .unwrap();
+    assert_eq!(python.process_id(), again.process_id());
+    assert_eq!(fixture.starts(), 2);
+}
+
+#[test]
+fn windows_diagnostic_uri_identity_preserves_non_drive_boundaries() {
+    let opened = "file:///D:/workspace/%E4%B8%AD%E6%96%87%20name.py";
+    let published = "file:///d%3A/workspace/%E4%B8%AD%E6%96%87%20name.py";
+    assert_eq!(
+        windows_diagnostic_uri_key(opened),
+        windows_diagnostic_uri_key(published)
+    );
+    let key = windows_diagnostic_uri_key(opened).unwrap();
+    assert_eq!(
+        windows_diagnostic_uri_key(&key).as_deref(),
+        Some(key.as_str())
+    );
+    for different in [
+        "file:///E:/workspace/%E4%B8%AD%E6%96%87%20name.py",
+        "file:///D:/Workspace/%E4%B8%AD%E6%96%87%20name.py",
+        "file:///D:/outside/name.py",
+        "file:///D:/workspace/%2520name.py",
+    ] {
+        assert_ne!(windows_diagnostic_uri_key(different), Some(key.clone()));
+    }
+    for untouched in [
+        "file:///D:/workspace/name.py?version=1",
+        "file:///D:/workspace/name.py#fragment",
+        "file://remote/share/name.py",
+        "https://example.invalid/D:/workspace/name.py",
+        "untitled:buffer",
+        "file:///workspace/name.py",
+        "file:///drive/workspace/name.py",
+    ] {
+        assert!(
+            windows_diagnostic_uri_key(untouched).is_none(),
+            "{untouched}"
+        );
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn diagnostic_uri_identity_does_not_fold_unix_paths() {
+    for uri in [
+        "file:///D:/workspace/main.py",
+        "file:///d%3A/workspace/main.py",
+        "file:///Workspace/main.py",
+    ] {
+        assert_eq!(diagnostic_uri_key(uri), uri);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn diagnostics_cache_matches_pyright_windows_uri_and_preserves_freshness() {
+    let cache = DiagnosticsCache::default();
+    let opened = "file:///D:/workspace/main.py";
+    let published = "file:///d%3A/workspace/main.py";
+    cache.record_publish_diagnostics(Some(&json!({
+        "uri": published, "version": 1,
+        "diagnostics": [{"message": "expected type error", "severity": 1}],
+    })));
+    let (found, timed_out) = cache
+        .wait_for_publication(opened, 1, 0, Instant::now())
+        .unwrap();
+    assert!(!timed_out);
+    assert_eq!(found.unwrap().diagnostics.len(), 1);
+    let baseline = cache.generation();
+    let (stale, timed_out) = cache
+        .wait_for_publication(opened, 2, baseline, Instant::now())
+        .unwrap();
+    assert!(timed_out);
+    assert_eq!(stale.unwrap().version, Some(1));
+    cache.record_publish_diagnostics(Some(&json!({
+        "uri": opened, "version": 2, "diagnostics": [],
+    })));
+    let (fresh, timed_out) = cache
+        .wait_for_publication(published, 2, baseline, Instant::now())
+        .unwrap();
+    assert!(!timed_out);
+    assert!(fresh.unwrap().diagnostics.is_empty());
+    assert_eq!(lock_unpoison(&cache.state).publications.len(), 1);
+    let (other, timed_out) = cache
+        .wait_for_publication("file:///D:/outside/main.py", 2, 0, Instant::now())
+        .unwrap();
+    assert!(timed_out);
+    assert!(other.is_none());
+}
+
+#[test]
 fn lsp_supervisor_is_lazy_and_reuses_one_process_for_concurrent_project_calls() {
     let _serial = super::super::serialize_fake_lsp_test();
     let fixture = Fixture::new("normal");
@@ -375,6 +525,60 @@ fn server_status_cache_malformed_notification_clears_stale_readiness() {
     cache.record(Some(&json!({"health": "ok"})));
     let error = cache.wait_for_quiescent_ok(Instant::now()).unwrap_err();
     assert!(matches!(error, LspError::RequestTimeout { .. }));
+}
+
+#[test]
+fn diagnostics_cache_rejects_late_old_version_as_fresh() {
+    let cache = DiagnosticsCache::default();
+    let uri = "file:///workspace/main.py";
+    let baseline = cache.generation();
+    cache.record_publish_diagnostics(Some(&json!({
+        "uri": uri, "version": 1, "diagnostics": [],
+    })));
+    let (old, timed_out) = cache
+        .wait_for_publication(uri, 2, baseline, Instant::now())
+        .unwrap();
+    assert!(
+        timed_out,
+        "a late explicit old version must not become a fresh clean result"
+    );
+    assert_eq!(old.unwrap().version, Some(1));
+    cache.record_publish_diagnostics(Some(&json!({
+        "uri": uri, "version": 2, "diagnostics": [{"message": "current error"}],
+    })));
+    let (current, timed_out) = cache
+        .wait_for_publication(uri, 2, baseline, Instant::now())
+        .unwrap();
+    assert!(!timed_out);
+    assert_eq!(current.unwrap().diagnostics.len(), 1);
+    // A later-arriving old empty result must not erase the newer error result.
+    cache.record_publish_diagnostics(Some(&json!({
+        "uri": uri, "version": 1, "diagnostics": [],
+    })));
+    let (current, timed_out) = cache
+        .wait_for_publication(uri, 2, baseline, Instant::now())
+        .unwrap();
+    assert!(!timed_out);
+    let current = current.unwrap();
+    assert_eq!(current.version, Some(2));
+    assert_eq!(current.diagnostics.len(), 1);
+}
+
+#[test]
+fn diagnostics_cache_rejects_future_version_for_an_older_request() {
+    let cache = DiagnosticsCache::default();
+    let uri = "file:///workspace/main.py";
+    let baseline = cache.generation();
+    cache.record_publish_diagnostics(Some(&json!({
+        "uri": uri, "version": 3, "diagnostics": [],
+    })));
+    let (_, timed_out) = cache
+        .wait_for_publication(uri, 2, baseline, Instant::now())
+        .unwrap();
+    assert!(
+        timed_out,
+        "freshness must match the exact requested document version"
+    );
 }
 
 #[test]

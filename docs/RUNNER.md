@@ -24,6 +24,26 @@ The Runner is the trust boundary closest to your repository. Configure it with
 narrow allowed roots and explicit shell profiles rather than broad interactive
 shell state.
 
+## Mixed-language navigation and text artifacts
+
+Language servers are started lazily and must be available on the Runner host.
+A project can use up to four language-server kinds concurrently; the existing
+Runner-wide limit remains four processes. Mixed Python/TypeScript navigation
+therefore no longer consumes a single exclusive per-project slot. Idle cleanup,
+process reuse, and read-only initialization restrictions are unchanged.
+
+On Windows, diagnostic-cache identity normalizes local drive-letter casing and
+encoded drive colons. It does not case-fold directory or file names, authorize
+external paths, or treat missing/stale diagnostics as a clean result. Explicit
+publication versions must match the requested document version; a late older
+version never overwrites a newer cached result. Only unversioned publications
+use the existing generation-based freshness fallback.
+
+Markdown `.md` and `.markdown` artifacts are exported as inert `text/plain`,
+with their original filename and bytes preserved. A leading Markdown link is
+not mistaken for JSON; known binary signatures still take precedence. This
+uses the existing MIME allowlist and does not enable HTML rendering.
+
 ## Core terms
 
 | Term | Meaning |

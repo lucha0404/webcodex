@@ -1165,6 +1165,15 @@ fn ooxml_mime_from_file(path: &Path) -> Option<&'static str> {
     Some(mime)
 }
 
+fn is_markdown_artifact_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
+        })
+}
+
 fn extension_mime(path: &str) -> Option<&'static str> {
     let lower = path.to_lowercase();
     if lower.ends_with(".png") {
@@ -1181,7 +1190,9 @@ fn extension_mime(path: &str) -> Option<&'static str> {
         Some("application/pdf")
     } else if lower.ends_with(".zip") {
         Some("application/zip")
-    } else if lower.ends_with(".txt") {
+    } else if lower.ends_with(".txt") || is_markdown_artifact_path(path) {
+        // Preserve Markdown bytes and filename as inert plain text. This uses
+        // the existing export MIME contract rather than enabling HTML rendering.
         Some("text/plain")
     } else if lower.ends_with(".csv") {
         Some("text/csv")
@@ -1199,7 +1210,7 @@ fn artifact_mime(path: &str, data: &[u8], sniff_json: bool) -> Option<String> {
     let mut mime = extension_mime(path);
     if let Some(magic) = magic_mime(data) {
         mime = Some(magic);
-    } else if sniff_json {
+    } else if sniff_json && !is_markdown_artifact_path(path) {
         let first = data.iter().copied().find(|b| !b.is_ascii_whitespace());
         if matches!(first, Some(b'{') | Some(b'[')) {
             mime = Some("application/json");
@@ -1218,7 +1229,7 @@ fn artifact_mime_from_file(path: &str, file_path: &Path, sniff_json: bool) -> Op
     let mut mime = extension_mime(path);
     if let Some(magic) = magic_mime(&prefix) {
         mime = Some(magic);
-    } else if sniff_json {
+    } else if sniff_json && !is_markdown_artifact_path(path) {
         let mut first = prefix
             .iter()
             .copied()
